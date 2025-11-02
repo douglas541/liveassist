@@ -4,6 +4,7 @@ import { RecordManager } from '../managers/RecordManager';
 import { ReminderManager } from '../managers/ReminderManager';
 import { LLMOrchestrator } from '../llm/LLMOrchestrator';
 import { logger } from '../utils/logger';
+import { SpecificationData } from '../types';
 
 export class MessageHandler {
   private userManager = new UserManager();
@@ -35,22 +36,24 @@ export class MessageHandler {
         }
       }
 
-      const spec = await this.specManager.getSpecWithId(userId, specType);
+      const specRecord = await this.specManager.getSpecWithId(userId, specType);
 
-      if (!spec) {
+      if (!specRecord) {
         return await this.initiateSetup(userId, specType);
       }
 
-            const recentRecords = await this.recordManager.getTodayRecords(spec.id);
+      const { id: specId, data: specData } = specRecord;
+
+      const recentRecords = await this.recordManager.getTodayRecords(specId);
 
       const llmResponse = await this.llmOrchestrator.processMessage(
         message,
-        spec.data,
+        specData,
         recentRecords,
         userId
       );
 
-      await this.executeAction(llmResponse, userId, spec.id, specType);
+      await this.executeAction(llmResponse, userId, specId, specType, specData);
 
       this.lastSpecPerUser.set(userId, specType);
 
@@ -216,34 +219,107 @@ export class MessageHandler {
     }
   }
 
+  private async handleSetupSpecAction(
+    userId: number,
+    specId: number,
+    specType: string,
+    currentSpec: SpecificationData,
+    data: any
+  ): Promise<void> {
+    if (!data) {
+      logger.warn('setup_spec triggered without data', { userId, specId, specType });
+      return;
+    }
+
+    if (data.start_setup) {
+      this.setupSessions.set(userId, { specType, responses: [] });
+      return;
+    }
+
+    const updatePayload = this.extractSpecUpdates(data);
+
+    if (!updatePayload) {
+      logger.warn('setup_spec data did not contain updates', { userId, specId, specType, data });
+      return;
+    }
+
+    const updatedSpec = JSON.parse(JSON.stringify(currentSpec));
+    this.mergeDeep(updatedSpec, updatePayload);
+
+    await this.specManager.updateSpec(specId, updatedSpec);
+    logger.info('Specification updated via setup_spec', {
+      specId,
+      specType,
+      updatedKeys: Object.keys(updatePayload),
+    });
+  }
+
+  private extractSpecUpdates(data: any): any | null {
+    if (!data || typeof data !== 'object') {
+      return null;
+    }
+
+    if (data.spec && typeof data.spec === 'object') {
+      return data.spec;
+    }
+
+    if (data.updates && typeof data.updates === 'object') {
+      return data.updates;
+    }
+
+    if (data.spec_updates && typeof data.spec_updates === 'object') {
+      return data.spec_updates;
+    }
+
+    const cloned = { ...data };
+    delete cloned.spec_type;
+    delete cloned.start_setup;
+    delete cloned.mode;
+
+    return Object.keys(cloned).length > 0 ? cloned : null;
+  }
+
+  private mergeDeep(target: any, source: any): void {
+    for (const key of Object.keys(source)) {
+      const value = source[key];
+
+      if (Array.isArray(value)) {
+        target[key] = value.slice();
+        continue;
+      }
+
+      if (value && typeof value === 'object') {
+        if (!target[key] || typeof target[key] !== 'object' || Array.isArray(target[key])) {
+          target[key] = {};
+        }
+        this.mergeDeep(target[key], value);
+        continue;
+      }
+
+      target[key] = value;
+    }
+  }
+
   private async executeAction(
     llmResponse: any,
     userId: number,
     specId: number,
-    _specType: string
+    specType: string,
+    specData: SpecificationData
   ): Promise<void> {
     const { action, data } = llmResponse;
 
     switch (action) {
-      case 'create_record':
-        await this.recordManager.createRecord(specId, userId, data);
+      case 'create_reminder':
+        await this.handleCreateReminderAction(userId, specId, specData, data, llmResponse.response);
         break;
 
-      case 'create_reminder':
-        if (data.reminder_type && data.next_execution && data.reminder_config) {
-          const recordId = await this.recordManager.createRecord(specId, userId, data);
-          
-          await this.reminderManager.createReminder(
-            specId,
-            userId,
-            data.reminder_type,
-            new Date(data.next_execution),
-            data.reminder_config,
-            data.message_template,
-            data.action_config,
-            recordId
-          );
-        }
+      case 'create_record':
+        await this.handleCreateRecordAction(userId, specId, specType, specData, data, llmResponse.response);
+        break;
+
+      case 'setup_spec':
+        await this.handleSetupSpecAction(userId, specId, specType, specData, data);
         break;
 
       case 'query':
@@ -255,6 +331,185 @@ export class MessageHandler {
       default:
         logger.warn('Unknown action', { action });
     }
+  }
+
+  private async handleCreateReminderAction(
+    userId: number,
+    specId: number,
+    specData: SpecificationData,
+    data: any,
+    llmResponseText?: string
+  ): Promise<void> {
+    const normalized = this.normalizeReminderPayload(data, specData);
+
+    if (!normalized) {
+      logger.warn('create_reminder payload missing required fields', { userId, specId, data });
+      return;
+    }
+
+    await this.persistReminder(userId, specId, normalized, llmResponseText);
+  }
+
+  private async handleCreateRecordAction(
+    userId: number,
+    specId: number,
+    specType: string,
+    specData: SpecificationData,
+    data: any,
+    llmResponseText?: string
+  ): Promise<void> {
+    if (specType === 'agenda') {
+      let normalized = this.normalizeReminderPayload(data, specData);
+      if (!normalized && data && typeof data === 'object' && data.record) {
+        normalized = this.normalizeReminderPayload(data.record, specData);
+      }
+
+      if (normalized) {
+        await this.persistReminder(userId, specId, normalized, llmResponseText);
+        return;
+      }
+    }
+
+    const recordPayload = data && typeof data === 'object' && data.record ? data.record : data;
+
+    await this.recordManager.createRecord(specId, userId, {
+      ...recordPayload,
+      llm_response: llmResponseText ?? null,
+    });
+  }
+
+  private async persistReminder(
+    userId: number,
+    specId: number,
+    normalized: {
+      reminderType: 'one_time' | 'recurring' | 'interval';
+      nextExecution: Date;
+      reminderConfig: any;
+      messageTemplate?: string;
+      actionConfig?: any;
+      recordPayload: any;
+    },
+    llmResponseText?: string
+  ): Promise<void> {
+    const recordId = await this.recordManager.createRecord(specId, userId, {
+      ...normalized.recordPayload,
+      llm_response: llmResponseText ?? null,
+    });
+
+    await this.reminderManager.createReminder(
+      specId,
+      userId,
+      normalized.reminderType,
+      normalized.nextExecution,
+      normalized.reminderConfig,
+      normalized.messageTemplate,
+      normalized.actionConfig,
+      recordId
+    );
+
+    logger.info('Reminder created', {
+      userId,
+      specId,
+      reminderType: normalized.reminderType,
+      nextExecution: normalized.nextExecution,
+      offsets: normalized.reminderConfig?.reminder_offsets_minutes,
+    });
+  }
+
+  private normalizeReminderPayload(data: any, specData: SpecificationData):
+    | {
+        reminderType: 'one_time' | 'recurring' | 'interval';
+        nextExecution: Date;
+        reminderConfig: any;
+        messageTemplate?: string;
+        actionConfig?: any;
+        recordPayload: any;
+      }
+    | null {
+    if (!data || typeof data !== 'object') {
+      return null;
+    }
+
+    const payload = data.reminder && typeof data.reminder === 'object' ? data.reminder : data;
+
+    const datetimeValue =
+      payload.datetime_iso ||
+      payload.datetime ||
+      payload.date_time ||
+      payload.next_execution ||
+      payload.start ||
+      payload.start_at ||
+      payload.when;
+
+    if (!datetimeValue) {
+      return null;
+    }
+
+    const parsedDate = new Date(datetimeValue);
+    if (Number.isNaN(parsedDate.getTime())) {
+      return null;
+    }
+
+    const reminderType =
+      payload.reminder_type ||
+      payload.type ||
+      (payload.repeat && payload.repeat !== 'none' ? 'recurring' : 'one_time');
+
+    const reminderConfig: any = {
+      title: payload.title,
+      description: payload.description,
+      timezone: payload.timezone,
+      reminder_offsets_minutes: undefined,
+      repeat: payload.repeat,
+      repeat_rule: payload.repeat_rule,
+      metadata: payload.metadata,
+    };
+
+    if (data.notification_settings && typeof data.notification_settings === 'object') {
+      reminderConfig.notification_settings = data.notification_settings;
+    }
+
+    if (!reminderConfig.reminder_offsets_minutes && data.reminder_offsets_minutes) {
+      reminderConfig.reminder_offsets_minutes = data.reminder_offsets_minutes;
+    }
+
+    if (!reminderConfig.reminder_offsets_minutes && Array.isArray(payload.reminders)) {
+      const offsets = payload.reminders
+        .map((item: any) => Number(item.minutes_before))
+        .filter((value: number) => Number.isFinite(value) && value >= 0);
+      if (offsets.length > 0) {
+        reminderConfig.reminder_offsets_minutes = offsets;
+      }
+    }
+
+    if (!reminderConfig.reminder_offsets_minutes && specData?.notification_settings?.default_reminder_offsets_minutes) {
+      reminderConfig.reminder_offsets_minutes = specData.notification_settings.default_reminder_offsets_minutes;
+    }
+
+    if (!reminderConfig.reminder_offsets_minutes) {
+      reminderConfig.reminder_offsets_minutes = [15];
+    }
+
+    const messageTemplate = data.message_template || payload.message_template || undefined;
+    const actionConfig = data.action_config || payload.action_config || undefined;
+
+    const recordPayload = {
+      reminder_id: payload.id,
+      title: payload.title,
+      datetime: parsedDate.toISOString(),
+      timezone: payload.timezone,
+      reminder_offsets_minutes: reminderConfig.reminder_offsets_minutes,
+      raw_payload: payload,
+    };
+
+    return {
+      reminderType: reminderType === 'interval' ? 'interval' : reminderType === 'recurring' ? 'recurring' : 'one_time',
+      nextExecution: parsedDate,
+      reminderConfig,
+      messageTemplate,
+      actionConfig,
+      recordPayload,
+    };
   }
 }
 

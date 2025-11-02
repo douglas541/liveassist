@@ -102,10 +102,13 @@ export class LiveAssistBot {
 
   async sendMessage(chatId: number, text: string): Promise<void> {
     try {
-      await this.bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+      await this.bot.sendMessage(chatId, text);
       logger.debug('Message sent', { chatId });
     } catch (error) {
-      logger.error('Error sending message', { error, chatId });
+      logger.error('Failed to send message', {
+        chatId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   }
