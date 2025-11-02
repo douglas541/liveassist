@@ -58,5 +58,3 @@ docker-compose.yml
 .editorconfig
 .prettierrc
 .eslintrc
-tsconfig.json
-
