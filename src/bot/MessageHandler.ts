@@ -85,16 +85,82 @@ export class MessageHandler {
 
   private async detectSpecType(message: string): Promise<string | null> {
     const lowerMsg = message.toLowerCase();
+    const normalized = lowerMsg
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '');
 
     const keywords = {
-      diet: ['comi', 'comida', 'refeição', 'dieta', 'caloria', 'proteína', 'macro', 'alimento'],
-      agenda: ['lembrete', 'lembrar', 'agenda', 'aviso', 'notificação', 'horário'],
-    };
+      diet: [
+        'comi',
+        'comida',
+        'refeicao',
+        'refeicoes',
+        'dieta',
+        'caloria',
+        'calorias',
+        'proteina',
+        'proteinas',
+        'macro',
+        'macros',
+        'alimento',
+        'alimentos',
+        'almoco',
+        'almocar',
+        'janta',
+        'jantar',
+        'lanche',
+        'lanchar',
+        'cafe da manha',
+      ],
+      agenda: [
+        'lembrete',
+        'lembretes',
+        'lembra',
+        'lembre',
+        'lembrar',
+        'lembro',
+        'lembre-me',
+        'agenda',
+        'agendar',
+        'aviso',
+        'avisar',
+        'avise',
+        'notificacao',
+        'notificar',
+        'horario',
+        'horarios',
+        'hora',
+        'horas',
+        'compromisso',
+        'compromissos',
+        'evento',
+        'eventos',
+        'reuniao',
+        'alarme',
+        'alarmes',
+        'escovar',
+        'escove',
+        'remover lembrete',
+        'remova o lembrete',
+        'cancelar lembrete',
+        'ativar lembrete',
+        'desativar lembrete',
+      ],
+    } as const;
 
     for (const [type, words] of Object.entries(keywords)) {
-      if (words.some((word) => lowerMsg.includes(word))) {
+      if (words.some((word) => normalized.includes(word))) {
         return type;
       }
+    }
+
+    const timePattern = /\b\d{1,2}[:h]\d{2}\b/;
+    if (timePattern.test(normalized)) {
+      return 'agenda';
+    }
+
+    if (/\brefeicao(es)?\b/.test(normalized) || /\bquantas calorias\b/.test(normalized)) {
+      return 'diet';
     }
 
     return null;
