@@ -4,6 +4,15 @@ import { logger } from '../utils/logger';
 import { getCurrentTimestamp } from '../utils/datetime';
 import NodeCache from 'node-cache';
 
+const DIET_DAILY_REPORT_TEMPLATE =
+  '\uD83D\uDCC5Relat\u00f3rio dieta hoje, {{data}}\n\n' +
+  '- Calorias: {{calorias_consumidas}} / {{calorias_meta}} kcal\n' +
+  '- Prote\u00edna: {{proteina_consumida}} g / {{proteina_meta}} g\n' +
+  '- Carboidratos: {{carboidratos_consumidos}} g / {{carboidratos_meta}} g\n' +
+  '- Gorduras: {{gorduras_consumidas}} g / {{gorduras_meta}} g\n\n' +
+  '\u23F0 \u00daltima refei\u00e7\u00e3o: {{hora_ultima_refeicao}} ({{status_janela}})\n\n' +
+  '\uD83C\uDF7D\uFE0F Faltam: {{calorias_restantes}} kcal';
+
 export class SpecificationManager {
   private cache = new NodeCache({ stdTTL: 3600 });
 
@@ -56,11 +65,12 @@ export class SpecificationManager {
 
   async createSpec(userId: number, specType: string, specJson: SpecificationData): Promise<number> {
     try {
+      const specWithDefaults = this.applyDefaultResponseTemplates(specType, specJson);
       const timestamp = getCurrentTimestamp();
       await runQuery('INSERT INTO specifications (user_id, type, spec_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)', [
         userId,
         specType,
-        JSON.stringify(specJson),
+        JSON.stringify(specWithDefaults),
         timestamp,
         timestamp,
       ]);
@@ -76,6 +86,28 @@ export class SpecificationManager {
       logger.error('Error in createSpec', { error, userId, specType });
       throw error;
     }
+  }
+
+  private applyDefaultResponseTemplates(specType: string, specJson: SpecificationData): SpecificationData {
+    if (specType !== 'diet') {
+      return specJson;
+    }
+
+    const specCopy: SpecificationData = { ...specJson };
+    const llmInstructions = {
+      ...(specCopy.llm_instructions ?? { system_prompt: '', context_guidelines: [] }),
+    };
+
+    const responseTemplates = { ...(llmInstructions.response_templates ?? {}) };
+
+    if (!responseTemplates.daily_report) {
+      responseTemplates.daily_report = DIET_DAILY_REPORT_TEMPLATE;
+    }
+
+    llmInstructions.response_templates = responseTemplates;
+    specCopy.llm_instructions = llmInstructions;
+
+    return specCopy;
   }
 
   async updateSpec(specId: number, specJson: SpecificationData): Promise<void> {
