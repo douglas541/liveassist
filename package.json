@@ -1,0 +1,39 @@
+{
+  "name": "liveassist-chatbot",
+  "version": "1.0.0",
+  "description": "LLM-first chatbot assistant with extensible specifications",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "db:init": "tsx src/scripts/initDatabase.ts",
+    "db:seed": "tsx src/scripts/seedSpecifications.ts",
+    "db:migrate-tz": "tsx src/scripts/migrateTimezones.ts"
+  },
+  "keywords": [
+    "chatbot",
+    "telegram",
+    "llm",
+    "assistant"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.13.1",
+    "dotenv": "^16.3.1",
+    "node-cache": "^5.1.2",
+    "node-telegram-bot-api": "^0.64.0",
+    "openai": "^4.20.1",
+    "sql.js": "^1.10.3",
+    "winston": "^3.11.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.6",
+    "@types/node-telegram-bot-api": "^0.64.0",
+    "@types/sql.js": "^1.4.8",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}
