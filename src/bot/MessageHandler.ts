@@ -12,6 +12,7 @@ export class MessageHandler {
   private reminderManager = new ReminderManager();
   private llmOrchestrator = new LLMOrchestrator();
   private setupSessions = new Map<number, { specType: string; responses: string[] }>();
+  private lastSpecPerUser = new Map<number, string>();
 
   async handleMessage(telegramId: string, userName: string, message: string): Promise<string> {
     try {
@@ -25,10 +26,13 @@ export class MessageHandler {
         return this.getGreetingResponse(userName);
       }
 
-      const specType = await this.detectSpecType(message);
+      let specType = await this.detectSpecType(message);
 
       if (!specType) {
-        return 'Desculpe, não consegui entender sua mensagem. Você pode me dizer sobre dieta, agenda/lembretes?';
+        specType = this.lastSpecPerUser.get(userId) ?? null;
+        if (!specType) {
+          return 'Desculpe, não consegui entender sua mensagem. Você pode me dizer sobre dieta, agenda/lembretes?';
+        }
       }
 
       const spec = await this.specManager.getSpecWithId(userId, specType);
@@ -47,6 +51,8 @@ export class MessageHandler {
       );
 
       await this.executeAction(llmResponse, userId, spec.id, specType);
+
+      this.lastSpecPerUser.set(userId, specType);
 
       return llmResponse.response;
     } catch (error) {
@@ -133,6 +139,7 @@ export class MessageHandler {
       );
 
       await this.specManager.createSpec(userId, session.specType, specData);
+      this.lastSpecPerUser.set(userId, session.specType);
 
       this.setupSessions.delete(userId);
 
