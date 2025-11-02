@@ -46,9 +46,6 @@ RUN mkdir -p /app/data && \
 # Switch to non-root user
 USER nodejs
 
-# Expose port (if needed for health checks)
-EXPOSE 3000
-
 # Use dumb-init to handle signals
 ENTRYPOINT ["dumb-init", "--"]
 
